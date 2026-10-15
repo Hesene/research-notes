@@ -162,6 +162,8 @@ td{color:#cbd0d8}
   <div class="meta">
     <span>阅读日期：2026-10-15</span>
     <span>·</span>
+    <span>更新日期：2026-10-16</span>
+    <span>·</span>
     <span>D3 / Qwen3.8-27B</span>
     <span>·</span>
     <span>阅读时间约 12 分钟</span>
@@ -509,64 +511,113 @@ B: true</code></pre>
   </section>
 
   <section id="batch">
-    <h2>6. 多个问题怎么并行？</h2>
+    <h2>6. 多个问题怎么并行？哪些部分会复用？</h2>
 
     <p>
-      D3 的做法不是“同一个 state encode 一次后挂多个 question head”，而是把每个 question
-      展开成一个独立 sample，再在 batch 维度并行。
+      这里需要区分 <strong>多模态编码复用</strong> 和 <strong>language backbone 复用</strong>。
+      从公开 runtime 可以确认：同一个 request 里的图片 / 视频媒体是共享的，视觉特征可以先计算一次，
+      再被多个 question 使用；但不同 question 仍会各自构造完整的语言序列，并沿 batch 维度共同经过 language backbone。
     </p>
 
-    <h3>5.1 一个 State 三个 Question</h3>
+    <h3>6.1 同一个 State，三个 Question</h3>
 
-    <pre><code>Prompt 1 = state + Q1 + options_1
-Prompt 2 = state + Q2 + options_2
-Prompt 3 = state + Q3 + options_3</code></pre>
+    <div class="diagram">Image / Video
+     ↓
+Vision Encoder
+     ↓
+Shared Media Features
+   ↙       ↓       ↘
+Q1 Prompt Q2 Prompt Q3 Prompt
+   ↓       ↓       ↓
+      Batched Language Backbone
+             ↓
+        h1 / h2 / h3
+             ↓
+     Shared Decision Readout</div>
 
-    <p>然后：</p>
-    <pre><code>batch = tokenizer(
-    [prompt_1, prompt_2, prompt_3],
-    padding=True,
-    return_tensors="pt",
-)
+    <p>
+      所以如果同一张图对应三个问题，视觉编码部分可以复用；但语言部分仍然会形成三条不同 sequence：
+    </p>
 
-outputs = backbone(**batch)</code></pre>
+    <pre><code>[shared visual features + state text + Q1 + options_1]
+[shared visual features + state text + Q2 + options_2]
+[shared visual features + state text + Q3 + options_3]</code></pre>
+
+    <p>这三条 sequence 会组成一个 batch，一起进入 language backbone：</p>
+
+    <pre><code>batch = [
+    prompt_q1,
+    prompt_q2,
+    prompt_q3,
+]
+
+outputs = language_backbone(batch)</code></pre>
 
     <p>得到：</p>
 
     <table>
       <thead>
-        <tr><th>阶段</th><th>Tensor Shape</th><th>含义</th></tr>
+        <tr><th>阶段</th><th>是否复用</th><th>说明</th></tr>
       </thead>
       <tbody>
-        <tr><td>Backbone</td><td>[3, L, 5120]</td><td>三个问题并行</td></tr>
-        <tr><td>Last pooling</td><td>[3, 5120]</td><td>每个问题一个 decision vector</td></tr>
-        <tr><td>Readout</td><td>[3, 255]</td><td>每个问题最多 255 个候选</td></tr>
+        <tr><td>Image / Video Decode</td><td>共享</td><td>同一 request 的媒体由多个 question 共用</td></tr>
+        <tr><td>Vision Encoder / Media Features</td><td>共享</td><td>视觉特征可先算一次，再提供给多个 question</td></tr>
+        <tr><td>Question Prompt</td><td>不共享</td><td>每个 question 都有自己的 question + options</td></tr>
+        <tr><td>Language Backbone</td><td>不做一次编码后复用</td><td>不同 question 形成不同 sequence，按 batch 并行 forward</td></tr>
+        <tr><td>Decision Readout</td><td>共享参数</td><td>所有 question 使用同一个 255-way readout</td></tr>
       </tbody>
     </table>
 
-    <h3>5.2 这是什么并行？</h3>
+    <h3>6.2 为什么 language 部分不能简单复用？</h3>
+
+    <p>
+      一个重要原因是 D3 使用了 <code>noncausal_full_attention</code>。
+      在 full-attention layer 中，前面的 state token 可以看到后面的 question / options，
+      因此同一个 state 在 Q1 和 Q2 下得到的 hidden representation 可能并不相同。
+    </p>
+
+    <div class="diagram">同一个 State
+
+State + Q1 + Options_1
+        ↓
+Language Backbone
+        ↓
+Question-dependent State Representation #1
+
+State + Q2 + Options_2
+        ↓
+Language Backbone
+        ↓
+Question-dependent State Representation #2</div>
+
+    <p>
+      所以公开 runtime 采用的是：
+      <strong>media feature 共享 + question sequence batch 并行</strong>，
+      而不是“language state encode 一次，再直接复用给所有 question”。
+    </p>
+
+    <h3>6.3 这意味着什么？</h3>
 
     <blockquote>
-      <p><strong>这是 batch parallelism，而不是 shared-state multi-head inference。</strong></p>
+      <p><strong>视觉部分可以省掉重复编码，但 language backbone 的计算仍然随 question 数增加。</strong></p>
     </blockquote>
 
     <p>
-      如果 state 是一段很长文本，Q1/Q2/Q3 的完整 sequence 中都会包含它。
-      所以 GPU 吞吐可以提高，但 language backbone 并没有天然只 encode 一次 state。
+      因此如果一个长视频 / 长文本对应很多问题，D3 的计算成本更接近：
     </p>
+
+    <div class="eq">1 × Vision Encoding + N × Question-dependent Language Computation</div>
 
     <p>
-      对长视频、多审核问题场景，可以进一步探索：
+      其中这 N 条 language sequence 可以在 GPU 上 batch 并行，所以 wall-clock latency 会比逐条串行更好，
+      但总 FLOPs 不会因为 batching 而消失。
     </p>
-    <div class="diagram">Shared State / Video Encoding
-             ↓
-     Shared Representation
-      ↙      ↓      ↘
-     Q1      Q2      Q3
-      ↓       ↓       ↓
- decision  decision  decision</div>
 
-    <p class="small">这属于在 D3 基础上的工程优化，而不是当前统一候选分类思想本身的必要条件。</p>
+    <div class="note">
+      <strong>源码边界：</strong>
+      “媒体特征共享、不同 question 组成 batch 进入 language backbone”可以从公开 runtime 逻辑确认；
+      至于未来是否可以进一步做 prefix / state cache 复用，则属于工程优化方向，不是当前公开实现本身。
+    </div>
   </section>
 
   <section id="certainty">
@@ -897,7 +948,7 @@ num_options = tensor([
     <a class="sub" href="#forward">3.2 最小代码</a>
     <a href="#tasks">4. choice / noul / score</a>
     <a href="#eval-flow">5. 评测数据流转</a>
-    <a href="#batch">6. 多问题并行</a>
+    <a href="#batch">6. 多问题并行与复用</a>
     <a href="#certainty">7. 结论可信度边界</a>
     <a href="#train">8. 训练任务插入</a>
     <a href="#attention">9. Non-causal Attention</a>
