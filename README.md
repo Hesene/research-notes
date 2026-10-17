@@ -1,6 +1,6 @@
 # Research Notes
 
-个人研究与论文阅读笔记。
+论文阅读笔记。
 
 🌐 [在线阅读](https://hesene.github.io/research-notes/)
 
