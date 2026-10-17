@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="StartLux-Decision v1.1 AutoThink 模型结构与 RLCD² 训练方案解析：Qwen3.8 骨干、混合注意力、概率读出、三阶段训练、proper scoring rule、group-relative policy gradient 与权重实证。">
+<title>StartLux-Decision v1.1 AutoThink：模型结构与 RLCD² 训练解析</title>
+<style>
+:root {
+  --bg: #0b0d10;
+  --text: #f3f4f6;
+  --muted: #a1a1aa;
+  --line: #242830;
+  --soft: #151922;
+  --soft-2: #10141a;
+  --blue: #82aaff;
+  --green: #7bdcb5;
+  --orange: #f6bd60;
+  --red: #ff7b86;
+  --violet: #c3a6ff;
+  --max: 820px;
+  --toc: 240px;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.84;
+}
+a { color: var(--blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.progress {
+  position: fixed;
+  inset: 0 auto auto 0;
+  width: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--blue), var(--violet));
+  z-index: 30;
+}
+.topbar {
+  height: 58px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(11, 13, 16, .93);
+  backdrop-filter: blur(10px);
+}
+.topinner {
+  max-width: 1180px;
+  width: 100%;
+  margin: auto;
+  padding: 0 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.brand { font-weight: 700; color: #f8fafc; letter-spacing: .2px; }
+.topnav { display: flex; gap: 18px; font-size: 14px; color: var(--muted); }
+.topnav a { color: var(--muted); }
+.layout {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 44px 24px 80px;
+  display: grid;
+  grid-template-columns: minmax(0, var(--max)) var(--toc);
+  gap: 72px;
+  justify-content: center;
+}
+article { min-width: 0; overflow-wrap: anywhere; }
+aside { position: relative; }
+.toc {
+  position: sticky;
+  top: 86px;
+  font-size: 13px;
+  color: var(--muted);
+  border-left: 1px solid var(--line);
+  padding-left: 18px;
+}
+.toc-title { font-weight: 700; color: #e5e7eb; margin-bottom: 9px; }
+.toc a {
+  display: block;
+  color: var(--muted);
+  padding: 5px 0;
+  line-height: 1.35;
+  transition: color .2s, transform .2s;
+}
+.toc a.sub { padding-left: 12px; }
+.toc a:hover, .toc a.active { color: var(--blue); text-decoration: none; transform: translateX(2px); }
+.category { font-size: 13px; color: var(--blue); font-weight: 650; margin-bottom: 12px; }
+h1 {
+  font-size: 38px;
+  line-height: 1.28;
+  letter-spacing: -.7px;
+  margin: 0 0 18px;
+  font-weight: 780;
+  color: #f8fafc;
+}
+.meta { display: flex; gap: 12px; flex-wrap: wrap; color: #8b93a1; font-size: 13px; margin-bottom: 34px; }
+.lead { font-size: 17px; color: #c4c7cf; margin-bottom: 28px; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 36px 0; }
+h2 {
+  font-size: 27px;
+  line-height: 1.4;
+  margin: 48px 0 18px;
+  padding-top: 4px;
+  color: #f8fafc;
+  letter-spacing: -.25px;
+  scroll-margin-top: 78px;
+}
+h3 { font-size: 21px; line-height: 1.45; margin: 34px 0 12px; color: #f8fafc; scroll-margin-top: 78px; }
+h4 { font-size: 17px; margin: 26px 0 8px; color: #f8fafc; }
+p { margin: 12px 0; }
+ul, ol { padding-left: 1.4em; margin: 10px 0 16px; }
+li { margin: 5px 0; }
+strong { color: #fff; }
+code {
+  background: #171b22;
+  border: 1px solid #232933;
+  border-radius: 5px;
+  padding: 2px 5px;
+  font: .92em "SFMono-Regular", Consolas, monospace;
+  color: #dbe5f2;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.diagram {
+  border: 1px solid var(--line);
+  background: var(--soft-2);
+  border-radius: 10px;
+  padding: 18px 20px;
+  margin: 18px 0 22px;
+  overflow: auto;
+  font: 13.5px/1.7 "SFMono-Regular", Consolas, monospace;
+  color: #d5dae2;
+  white-space: pre;
+}
+.note, .key, .warn {
+  border-radius: 9px;
+  padding: 16px 18px;
+  margin: 18px 0;
+  color: #c8ccd4;
+}
+.note { background: #11161d; border: 1px solid #242830; }
+.key { background: #0f1726; border: 1px solid #20375c; border-left: 4px solid #4f83ff; }
+.warn { background: #1a1510; border: 1px solid #49341e; border-left: 4px solid var(--orange); }
+.note strong, .key strong, .warn strong { color: #fff; }
+.tldr { border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; background: #10141a; }
+.tldr ol { margin-bottom: 0; }
+.equation {
+  margin: 20px 0;
+  padding: 18px 20px;
+  border: 1px solid #29303b;
+  border-radius: 9px;
+  background: #0a0e14;
+  text-align: center;
+  overflow-x: auto;
+  color: #f7f8fa;
+  font: 19px/1.7 "Times New Roman", "Noto Serif SC", serif;
+}
+.equation .label { display: block; margin-top: 6px; color: var(--muted); font: 12px/1.4 sans-serif; }
+table { width: 100%; border-collapse: collapse; margin: 16px 0 24px; font-size: 14px; }
+th, td { border-bottom: 1px solid var(--line); padding: 10px 11px; text-align: left; vertical-align: top; }
+th { background: #11161d; color: #edf2f7; font-weight: 650; }
+td { color: #cbd0d8; }
+.tag {
+  display: inline-block;
+  font-size: 12px;
+  border: 1px solid #2a313c;
+  background: #12161d;
+  color: #c9ced7;
+  border-radius: 999px;
+  padding: 3px 9px;
+  margin: 0 6px 6px 0;
+}
+.small { font-size: 13px; color: var(--muted); }
+.pipeline { display: grid; grid-template-columns: 1fr 38px 1fr 38px 1fr; align-items: stretch; gap: 8px; margin: 22px 0; }
+.stage {
+  border: 1px solid var(--line);
+  background: var(--soft-2);
+  border-radius: 10px;
+  padding: 16px;
+  min-height: 196px;
+}
+.stage-no { color: var(--blue); font: 700 12px/1.2 sans-serif; letter-spacing: .08em; text-transform: uppercase; }
+.stage h4 { margin: 8px 0 10px; }
+.stage p { font-size: 13px; line-height: 1.62; color: #bdc3cd; }
+.arrow { display: grid; place-items: center; color: #596273; font-size: 22px; }
+.flow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin: 20px 0;
+}
+.flow-card { border: 1px solid var(--line); border-radius: 10px; background: var(--soft-2); padding: 16px 17px; }
+.flow-card h4 { margin: 0 0 8px; }
+.flow-card p { margin: 0; color: #c3c8d1; font-size: 14px; }
+.metric-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 18px 0; }
+.metric { border: 1px solid var(--line); background: var(--soft-2); border-radius: 10px; padding: 15px 16px; }
+.metric .value { font-size: 25px; font-weight: 760; line-height: 1.25; color: #fff; }
+.metric .name { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.bar-list { margin: 20px 0 26px; }
+.bar-row { display: grid; grid-template-columns: 115px 1fr 70px; gap: 12px; align-items: center; margin: 10px 0; font-size: 13px; }
+.bar-track { height: 8px; background: #171b22; border-radius: 999px; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, #517dd8, #9d7ee9); }
+.bar-value { text-align: right; color: #cbd0d8; font-variant-numeric: tabular-nums; }
+details { border: 1px solid var(--line); background: var(--soft-2); border-radius: 9px; margin: 14px 0; }
+summary { cursor: pointer; padding: 12px 15px; color: #dce1e8; font-weight: 650; }
+details > div { padding: 0 15px 14px; color: #bfc5cf; font-size: 14px; }
+.footer { margin-top: 58px; padding-top: 24px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+.source-list li { margin-bottom: 8px; }
+.print-only { display: none; }
+@media (max-width: 1000px) {
+  .layout { grid-template-columns: minmax(0, 1fr); gap: 0; width: 100%; }
+  aside { display: none; }
+}
+@media (max-width: 760px) {
+  .pipeline { grid-template-columns: 1fr; }
+  .arrow { transform: rotate(90deg); min-height: 28px; }
+  .stage { min-height: 0; }
+  .flow, .metric-row { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  .layout { padding: 30px 18px 60px; }
+  h1 { font-size: 31px; }
+  h2 { font-size: 24px; }
+  .topnav { display: none; }
+  .bar-row { grid-template-columns: 88px 1fr 62px; }
+  table { display: block; overflow-x: auto; }
+  th, td { min-width: 108px; }
+}
+@media print {
+  :root { --bg: #fff; --text: #16181d; --muted: #555; --line: #d9dde4; --soft-2: #f7f8fa; }
+  body { background: #fff; color: #16181d; font-size: 11pt; }
+  .topbar, aside, .progress { display: none; }
+  .layout { display: block; max-width: 820px; padding: 0; }
+  h1, h2, h3, h4, strong { color: #111; }
+  .diagram, .equation, .stage, .flow-card, .metric, .tldr, .note, .key, .warn { background: #f8f9fb; color: #222; break-inside: avoid; }
+  a { color: #174ea6; }
+}
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+<header class="topbar">
+  <div class="topinner">
+    <a class="brand" href="../">Research Notes</a>
+    <nav class="topnav" aria-label="文章导航">
+      <a href="#tldr">TL;DR</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#training">Training</a>
+      <a href="#rlcd">RLCD²</a>
+      <a href="#weights">Weights</a>
+    </nav>
+  </div>
+</header>
+
+<div class="layout" id="top">
+<article>
+  <div class="category">paper-reading · model-architecture · reinforcement-learning</div>
+  <h1>StartLux-Decision v1.1 AutoThink：模型结构与 RLCD² 训练解析</h1>
+  <div class="meta">
+    <span>调研日期：2026-10-17</span><span>·</span>
+    <span>重点对象：27B AutoThink</span><span>·</span>
+    <span>基座：Qwen3.8-27B</span><span>·</span>
+    <span>阅读时间约 15 分钟</span>
+  </div>
+
+  <p class="lead">
+    这篇笔记只回答两个核心问题：<strong>StartLux 怎样把 Qwen3.8-27B 改造成一个能“先读概率、必要时再思考”的决策模型？RLCD² 又怎样训练这段思考，使它改善概率而不是无限延长？</strong>
+    评测数字仅保留用于解释训练作用的最小集合。
+  </p>
+
+  <section id="tldr">
+    <h2>1. TL;DR</h2>
+    <div class="note">
+      <strong>证据口径：</strong>模型结构来自配置与全部 safetensors header；权重变化来自覆盖全部共享 tensor 的确定性抽样；RL 公式和消融来自技术报告。明确事实与推断在文中分开标记。
+    </div>
+    <div class="tldr">
+      <ol>
+        <li>27B AutoThink 的直接基座是 <strong>Qwen3.8-27B</strong>。虽然 Transformers 类名仍叫 <code>Qwen3_5ForConditionalGeneration</code>，权重形状、tokenizer、模板与数值距离都指向 Qwen3.8。</li>
+        <li>文本骨干是 64 层混合 Transformer：<strong>48 层线性注意力 + 16 层全注意力</strong>，每四层出现一次 full attention。</li>
+        <li>它没有新建决策分类头。候选项映射到 A–Z，直接读取原 LM Head 的候选 token logits，再做温度缩放和 softmax。</li>
+        <li>AutoThink 先得到 <code>p₀</code>；若最大概率低于 gate，再生成推理 <code>τ</code>，得到 <code>p₁</code>，最终返回 <strong>0.25p₀ + 0.75p₁</strong>。</li>
+        <li>训练分三段：全参数决策 SFT → adapter 扩展任务并合并 → reasoning supervision + 全参数 RLCD²。</li>
+        <li>RLCD² 的奖励是：<strong>推理后概率质量 − 推理前概率质量 − 超过软预算的长度成本</strong>。发布模型用 decision-weighted proper score、3072-token 软预算和 4096-token 硬上限。</li>
+        <li>权重实证显示：训练主要改写 MLP、全注意力和线性注意力；视觉塔保持冻结，LM Head 几乎未动。</li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="architecture">
+    <h2>2. 模型结构：Qwen3.8 混合骨干，不增加决策头</h2>
+
+    <h3 id="base">2.1 直接基座与精确配置</h3>
+    <p>27B AutoThink 延续 Qwen3.8-27B 的文本与视觉主干。其核心配置如下：</p>
+
+    <table>
+      <thead><tr><th>结构项</th><th>27B AutoThink</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td>文本层数</td><td>64</td><td>主语言模型深度</td></tr>
+        <tr><td>注意力层构成</td><td>48 linear + 16 full</td><td>线性递推负责效率，全注意力周期性整合全局信息</td></tr>
+        <tr><td>Hidden size</td><td>5,120</td><td>残差流宽度</td></tr>
+        <tr><td>FFN intermediate</td><td>17,408</td><td>MLP 容量，也是训练后变化最明显的模块</td></tr>
+        <tr><td>Attention heads / KV heads</td><td>24 / 4</td><td>GQA，多 query head 共享较少 KV head</td></tr>
+        <tr><td>Head dimension</td><td>256</td><td>每个注意力头维度</td></tr>
+        <tr><td>词表 / 最大位置长度</td><td>248,320 / 262,144</td><td>沿用基座 tokenizer 与 256K 上下文配置</td></tr>
+        <tr><td>视觉塔</td><td>27 层，约 460.7M 参数</td><td>训练期间冻结，输出映射到文本 hidden size</td></tr>
+      </tbody>
+    </table>
+
+    <div class="diagram">Text / JSON / Images
+          │
+          ▼
+┌───────────────────────────────┐
+│ Frozen vision tower (if used) │
+└──────────────┬────────────────┘
+               │ visual tokens
+               ▼
+┌──────────────────────────────────────────────────────┐
+│ Qwen3.8 text backbone · 64 layers                   │
+│                                                      │
+│ [Linear] → [Linear] → [Linear] → [Full Attention]   │
+│                × 16 groups                           │
+│                                                      │
+│ hidden=5120 · FFN=17408 · causal                     │
+└──────────────────────────┬───────────────────────────┘
+                           │ final-position state
+                           ▼
+              Original LM output projection
+                           │
+                           ▼
+                   A–Z candidate logits</div>
+
+    <div class="key">
+      <strong>关键区别：</strong>StartLux 不是把 backbone 后面接一个新的 K 类分类器，而是复用词表输出矩阵中 A–Z 对应位置的 logits。这样概率读出和文本推理共享同一模型参数，也解释了为什么 LM Head 几乎不需要改动。
+    </div>
+
+    <h3 id="readout">2.2 从候选标签到概率</h3>
+    <p>调用方提供状态、问题和候选项。runtime 把候选项依次标为 A、B、C……，读取答案位置上这些标签的 logits：</p>
+
+    <div class="equation">
+      p(k|x)=Softmax(z<sub>A:Z</sub>/T<sub>type</sub>)<sub>k</sub>
+      <span class="label">每种问题类型分别拟合温度：choice / noul / score</span>
+    </div>
+
+    <p><code>choice</code>、<code>noul</code> 和 <code>score</code> 共用相同 readout；区别主要在 prompt、候选构造和后处理。27B 的三个温度分别约为 0.9503、1.3760、1.0108。温度改变概率尖锐度，不改变候选排序。</p>
+
+    <div class="flow">
+      <div class="flow-card"><h4>choice</h4><p>候选项直接映射为 A–Z，输出完整概率分布。</p></div>
+      <div class="flow-card"><h4>noul</h4><p>构造成二选一判断，最终返回“是”的概率。</p></div>
+      <div class="flow-card"><h4>score</h4><p>2–10 档有序概率，并可计算期望分。</p></div>
+      <div class="flow-card"><h4>超过 26 项</h4><p>分组淘汰后再决赛，不再等价于一次联合 softmax。</p></div>
+    </div>
+
+    <h3 id="autothink">2.3 Read-or-Think 前向流程</h3>
+    <div class="diagram">                    ┌─────────────────────┐
+Request ── causal readout ──▶ p₀ ── max(p₀) ≥ gate ?
+                    │                    │
+                    │ yes                │ no
+                    ▼                    ▼
+                 return p₀       sample reasoning τ
+                                         │
+                                         ▼
+                               post-reasoning readout p₁
+                                         │
+                                         ▼
+                                return 0.25p₀ + 0.75p₁</div>
+
+    <p>推理生成使用 temperature 0.6、top-p 0.95、top-k 20，最多 4096 token。论文主要结果使用 <code>gate=0.9</code>；公开服务器默认值一度为 0.6。gate 是 runtime 策略，不是一个额外学习出来的神经网络门控头。</p>
+  </section>
+
+  <section id="training">
+    <h2>3. 三阶段训练：先学概率，再扩任务，最后恢复推理</h2>
+
+    <div class="pipeline" aria-label="三阶段训练流程">
+      <div class="stage">
+        <div class="stage-no">Stage 1</div>
+        <h4>Decision SFT</h4>
+        <p><strong>Lux-Release</strong><br>27B 约 80 万条记录</p>
+        <p>对完整文本主干与 LM 输出投影做全参数监督训练，以目标概率分布和候选 logits 的精确 soft cross-entropy 建立 typed decision 能力。</p>
+      </div>
+      <div class="arrow">→</div>
+      <div class="stage">
+        <div class="stage-no">Stage 2</div>
+        <h4>Task Expansion</h4>
+        <p><strong>Lux-Rounds</strong><br>约 170 万条记录</p>
+        <p>训练 adapter 扩大任务覆盖，完成后合并回 dense 权重。Instant 同时学习 prompt 双向 full attention；AutoThink 保持全因果结构。</p>
+      </div>
+      <div class="arrow">→</div>
+      <div class="stage">
+        <div class="stage-no">Stage 3</div>
+        <h4>Reasoning + RLCD²</h4>
+        <p><strong>Lux-Think</strong><br>每尺寸约 4千–2.1 万条推理样本</p>
+        <p>先用 reasoning adapter 恢复推理生成并合并，再用 RLCD² 对全部语言模型参数做策略优化；视觉塔始终冻结。</p>
+      </div>
+    </div>
+
+    <h3 id="stage1">3.1 Stage 1：直接优化完整概率分布</h3>
+    <p>训练目标不是只让正确选项排第一，而是对目标分布 <code>t</code> 和候选概率 <code>p</code> 做交叉熵：</p>
+    <div class="equation">
+      L<sub>decision</sub> = −∑<sub>k</sub> t<sub>k</sub> log p<sub>k</sub>
+      <span class="label">软标签可以保留标注者分歧，不必压成 one-hot</span>
+    </div>
+    <p>这里使用候选 logits 的精确梯度，而不是先采样一个答案再做 policy gradient。论文的独立消融显示，直接概率梯度比 sampled policy gradient 更容易改善校准。</p>
+
+    <h3 id="stage2">3.2 Stage 2：adapter 是训练手段，不是最终结构</h3>
+    <p>Stage 2 使用 adapter 降低多轮配方实验成本，但发布 checkpoint 已把 adapter 合并进原权重。权重文件中没有独立 LoRA/adapter tensor，也没有扩大的层维度。因此部署时仍是普通 dense 模型，不需要旁路模块。</p>
+
+    <h3 id="stage3">3.3 Stage 3：reasoning supervision 是 RL 的前置条件</h3>
+    <p>决策训练会削弱模型生成和正常结束推理的能力，所以作者先用推理示范恢复“会写、会停”的轨迹，再进行 RL。若直接对一个经常输出空轨迹的 checkpoint 做 policy gradient，模型会学会大量跳过推理；单纯提高最大生成长度也不能修复重复循环。</p>
+  </section>
+
+  <section id="rlcd">
+    <h2>4. RLCD²：奖励“推理带来的概率改善”</h2>
+
+    <h3 id="roles">4.1 两个角色：可训练 policy 与冻结 scorer</h3>
+    <div class="diagram">Reasoning-supervised checkpoint
+             │
+             ├── frozen copy ──▶ scorer: compute p₀ and p₁
+             │
+             └── trainable copy ▶ policy: generate reasoning τ
+                                      │
+                                      ▼
+                       all language-model parameters updated
+                       vision tower remains frozen</div>
+
+    <p>冻结 scorer 的目的，是防止奖励函数跟随 policy 一起漂移。policy 只能通过生成更有用的推理来提高得分，不能简单改变负责打分的概率读出器。最终部署只有一个更新后的 checkpoint；KL 正则用于约束它不要偏离起始模型太远。</p>
+
+    <h3 id="proper-score">4.2 为什么不用“答对 +1，答错 0”</h3>
+    <p>RLCD² 使用 proper scoring rule 评价整个概率分布。论文讨论 Brier score、log score，并在发布模型中采用 decision-weighted score：</p>
+
+    <div class="equation">
+      S<sub>B</sub>(p,t)=−||p−t||²
+      &nbsp;&nbsp;&nbsp;&nbsp;
+      S<sub>L</sub>(p,t)=∑<sub>k</sub>t<sub>k</sub>log p<sub>k</sub>
+    </div>
+
+    <div class="equation">
+      s(q,z)=zW(q)−C(q), &nbsp;
+      W(q)=∫<sub>0</sub><sup>q</sup>w(c)dc, &nbsp;
+      C(q)=∫<sub>0</sub><sup>q</sup>cw(c)dc
+      <span class="label">w(c) 是 Uniform 与 Beta(8,2) 的等权混合，高置信区间权重更大</span>
+    </div>
+
+    <p>其期望梯度满足 <code>∂E[s]/∂q = w(q)(π−q)</code>，因此最优报告仍是真实概率，而不是盲目把正确选项推到 1。对于有序 <code>score</code>，评分作用于累计概率。</p>
+
+    <h3 id="reward">4.3 奖励函数与长度预算</h3>
+    <div class="equation">
+      r(x,τ)=S(p<sub>1</sub>(x,τ),t)−S(p<sub>0</sub>(x),t)−λ·max(0,|τ|−B)
+      <span class="label">发布配置：decision-weighted score；B=3072；λ=10⁻⁴；硬上限=4096</span>
+    </div>
+
+    <div class="flow">
+      <div class="flow-card"><h4>概率改善项</h4><p>推理后分布比初始分布更接近目标时得到正奖励；即使 argmax 不变，校准改善仍可获益。</p></div>
+      <div class="flow-card"><h4>软长度项</h4><p>前 3072 token 不扣分；超出后每 token 扣 10⁻⁴。达到 4096 时总长度罚分为 0.1024。</p></div>
+    </div>
+
+    <div class="warn">
+      <strong>软预算不是最大长度。</strong>它不会在 3072 token 截断轨迹，而是让超预算部分在组内竞争时处于劣势。真正的硬停止仍是 4096 token。
+    </div>
+
+    <h3 id="policy">4.4 Group-relative policy gradient</h3>
+    <p>每个 prompt 采样 <code>G</code> 条推理轨迹，组内中心化奖励并裁剪优势：</p>
+    <div class="equation">
+      A<sub>i</sub>=clip(r<sub>i</sub>−r̄, −5, 5)
+      <span class="label">不除以组内标准差：奖励差很小的组自然产生较小更新</span>
+    </div>
+
+    <div class="equation">
+      L=−(1/N)∑<sub>i,s</sub> min[ρ<sub>i,s</sub>A<sub>i</sub>, clip(ρ<sub>i,s</sub>,1−ε,1+ε)A<sub>i</sub>]
+      +β KL(π<sub>θ</sub>||π<sub>ref</sub>)
+      <span class="label">PPO/GRPO 风格的 token-level clipped surrogate，并向起始策略做 KL 正则</span>
+    </div>
+
+    <ul>
+      <li>只训练初始最大概率低于 0.9 的问题，与论文推理 gate 对齐。</li>
+      <li>8 token 内结束的轨迹视为空推理，奖励直接设为 0。</li>
+      <li>所有语言模型参数参与 RL 更新，而不是只训练一个输出头。</li>
+      <li>论文没有披露 <code>G</code>、<code>ε</code>、<code>β</code>、学习率、batch size 和训练步数。</li>
+    </ul>
+
+    <h3 id="cancellation">4.5 一个重要但容易忽视的抵消项</h3>
+    <p>同一 prompt 的所有非空轨迹共享相同的 <code>S(p₀,t)</code>。经过组内中心化后，这一项会抵消：</p>
+    <div class="equation">
+      [S(p<sub>1,i</sub>,t)−S(p<sub>0</sub>,t)] − mean<sub>j</sub>[S(p<sub>1,j</sub>,t)−S(p<sub>0</sub>,t)]
+      = S(p<sub>1,i</sub>,t)−mean<sub>j</sub>S(p<sub>1,j</sub>,t)
+    </div>
+    <p>所以在全是非空轨迹的组里，直接梯度信号主要来自“哪条轨迹产生更好的 <code>p₁</code>”以及长度差异。<code>p₀</code> 是解释增量价值的基准；空轨迹的零奖励才为“是否值得思考”提供特殊参照。</p>
+
+    <h3 id="what-it-learns">4.6 RLCD² 实际学到了什么</h3>
+    <div class="metric-row">
+      <div class="metric"><div class="value">45.9% → 93.9%</div><div class="name">9B 推理正常终止率</div></div>
+      <div class="metric"><div class="value">2494 → 868</div><div class="name">9B 平均推理 token</div></div>
+      <div class="metric"><div class="value">80.38 → 80.48</div><div class="name">9B 默认答案准确率</div></div>
+    </div>
+    <p>这一组数字概括了 RLCD² 的主要作用：<strong>大幅修复循环和不终止，基本维持准确率</strong>。受控消融进一步显示，长度罚分主要负责终止，proper-score 奖励主要负责概率质量。27B 在 RL 前已经能用约 313 token 完成推理，因此边际变化很小。</p>
+
+    <div class="warn">
+      <strong>它不是过程奖励。</strong>RLCD² 不检查推理步骤是否真实、是否存在逻辑跳步，也不保证可见 CoT 忠实反映模型内部因果。只要轨迹能让冻结 scorer 给出更好的最终概率，它就可能得到奖励。
+    </div>
+  </section>
+
+  <section id="weights">
+    <h2>5. 权重文件告诉我们的训练事实</h2>
+
+    <h3 id="weight-diff">5.1 与 Qwen3.8 原版的精确结构差异</h3>
+    <div class="metric-row">
+      <div class="metric"><div class="value">−15</div><div class="name">删除的 tensor，全部属于 MTP</div></div>
+      <div class="metric"><div class="value">−424.7M</div><div class="name">参数减少量，约 −1.53%</div></div>
+      <div class="metric"><div class="value">0</div><div class="name">新增决策分类头</div></div>
+    </div>
+    <p>StartLux 保留 Qwen3.8 的 64 层主干，删除了一层 <code>mtp.*</code> 多 token 预测辅助模块，包括注意力、MLP、norm 与 pre-FC 投影。推断上，这些权重不是 typed decision 或常规自回归服务所必需；论文没有明确解释删除动机。</p>
+
+    <details>
+      <summary>权重审计方法与边界</summary>
+      <div>
+        读取 StartLux、Qwen3.8 与 Qwen3.5 的全部 safetensors 索引和分片 header，精确比较 tensor 名称、形状、dtype 与参数量；随后对每个共享 tensor 读取最多 32,768 个由名称哈希确定位置的连续值，小 tensor 全量读取。Qwen3.8 对比覆盖 1,184 个共享 tensor、约 2,265 万个权重值。数值差异是覆盖所有 tensor 的抽样估计，不是整个 50 GiB 权重的逐字节全量哈希。
+      </div>
+    </details>
+
+    <h3 id="module-change">5.2 变化集中在哪里</h3>
+    <p>相对改变量定义为 <code>RMS(StartLux−Qwen3.8) / RMS(Qwen3.8)</code>。它描述更新幅度，不等于参加训练的参数比例。</p>
+
+    <div class="bar-list" aria-label="各模块相对权重改变量">
+      <div class="bar-row"><span>MLP</span><div class="bar-track"><div class="bar-fill" style="width:96.3%"></div></div><span class="bar-value">4.815%</span></div>
+      <div class="bar-row"><span>Full attention</span><div class="bar-track"><div class="bar-fill" style="width:35.9%"></div></div><span class="bar-value">1.797%</span></div>
+      <div class="bar-row"><span>Linear attention</span><div class="bar-track"><div class="bar-fill" style="width:14.1%"></div></div><span class="bar-value">0.703%</span></div>
+      <div class="bar-row"><span>Embedding</span><div class="bar-track"><div class="bar-fill" style="width:1.7%"></div></div><span class="bar-value">0.084%</span></div>
+      <div class="bar-row"><span>Norm</span><div class="bar-track"><div class="bar-fill" style="width:.6%"></div></div><span class="bar-value">0.028%</span></div>
+      <div class="bar-row"><span>LM Head</span><div class="bar-track"><div class="bar-fill" style="width:.08%"></div></div><span class="bar-value">0.00025%</span></div>
+      <div class="bar-row"><span>Vision tower</span><div class="bar-track"><div class="bar-fill" style="width:0"></div></div><span class="bar-value">0%</span></div>
+    </div>
+
+    <p>适配重点是 FFN/MLP、门控投影和注意力 Q/K/V 等内部变换，而不是词表输出矩阵。变化最大的层多出现在第 3、7、11、15、19、23、27 层，恰好对应每四层一次的 full-attention 节点。</p>
+
+    <div class="key">
+      <strong>与训练方案相互印证：</strong>发布权重没有外置 adapter，说明 Stage 2/3 adapter 已合并；文本主干广泛变化，符合 Stage 1 全参数 SFT 和 Stage 3 全参数 RL；视觉抽样值与 Qwen3.8 全部相同，符合视觉塔冻结。
+    </div>
+  </section>
+
+  <section id="limits">
+    <h2>6. 复现边界与技术判断</h2>
+    <ol>
+      <li><strong>训练不能严格复现。</strong>缺少 RL group size、PPO clip、KL 系数、学习率、batch size、训练步数以及完整数据配方。</li>
+      <li><strong>gate 不是 RL 学出的收益预测器。</strong>它只依据 <code>max(p₀)</code> 决定是否思考，无法直接估计“继续推理的预期收益”。</li>
+      <li><strong>冻结 scorer 带来稳定性，也带来偏差。</strong>训练奖励由起始 checkpoint 读出，部署由最终 checkpoint 读出；KL 约束这种偏移，但论文没有单独量化两者差异。</li>
+      <li><strong>长度预算会伤害真正需要长计算的问题。</strong>3072 是折中，不是普适最优值；短预算能提高终止率，却会明显降低长计算准确率。</li>
+      <li><strong>“概率更好”不等于“答案一定翻转为正确”。</strong>proper score 同时优化校准和分辨率，可能在 argmax 不变时仍得到改进。</li>
+    </ol>
+
+    <div class="note">
+      <strong>最终判断：</strong>StartLux AutoThink 的技术核心不是给分类模型附加 CoT，而是把原语言模型同时用作概率读出器、推理策略和推理后读出器。RLCD² 则主要把这个系统从“会推理但可能循环”调整为“在不确定时进行有限推理，并尽量维持可用概率”。
+    </div>
+  </section>
+
+  <section id="sources">
+    <h2>7. 主要资料</h2>
+    <ol class="source-list">
+      <li><a href="https://arxiv.org/html/2610.17309" target="_blank" rel="noreferrer">StartLux-Decision 技术报告</a>：模型设计、三阶段训练、RLCD² 公式和消融。</li>
+      <li><a href="https://github.com/StartLuxLabs/StartLux-Decision" target="_blank" rel="noreferrer">StartLux-Decision 官方仓库</a>：推理流程、服务实现和公开配置。</li>
+      <li><a href="https://huggingface.co/startlux-models/StartLux-Decision-v1.1-27B-AutoThink" target="_blank" rel="noreferrer">27B AutoThink 模型仓库</a>：权重、配置、温度和模型卡。</li>
+      <li><a href="https://huggingface.co/Qwen/Qwen3.8-27B" target="_blank" rel="noreferrer">Qwen3.8-27B</a>：原版基座的配置与权重。</li>
+    </ol>
+  </section>
+
+  <div class="footer">
+    本文聚焦模型结构与训练机制。权重结构结论来自完整 header；数值变化来自覆盖全部共享 tensor 的确定性抽样。文章未把公开开发集成绩当作独立泛化证据。
+  </div>
+</article>
+
+<aside>
+  <nav class="toc" aria-label="页面目录">
+    <div class="toc-title">On this page</div>
+    <a href="#tldr">1. TL;DR</a>
+    <a href="#architecture">2. 模型结构</a>
+    <a href="#base" class="sub">直接基座与配置</a>
+    <a href="#readout" class="sub">概率读出</a>
+    <a href="#autothink" class="sub">Read-or-Think</a>
+    <a href="#training">3. 三阶段训练</a>
+    <a href="#stage1" class="sub">决策 SFT</a>
+    <a href="#stage2" class="sub">Adapter 合并</a>
+    <a href="#stage3" class="sub">推理监督</a>
+    <a href="#rlcd">4. RLCD²</a>
+    <a href="#proper-score" class="sub">Proper score</a>
+    <a href="#reward" class="sub">奖励函数</a>
+    <a href="#policy" class="sub">策略优化</a>
+    <a href="#cancellation" class="sub">抵消项</a>
+    <a href="#weights">5. 权重证据</a>
+    <a href="#limits">6. 复现边界</a>
+    <a href="#sources">7. 主要资料</a>
+  </nav>
+</aside>
+</div>
+
+<script>
+(() => {
+  const progress = document.getElementById('progress');
+  const tocLinks = [...document.querySelectorAll('.toc a')];
+  const sections = tocLinks
+    .map(a => document.querySelector(a.getAttribute('href')))
+    .filter(Boolean);
+
+  function update() {
+    const doc = document.documentElement;
+    const max = doc.scrollHeight - doc.clientHeight;
+    progress.style.width = `${max > 0 ? (doc.scrollTop / max) * 100 : 0}%`;
+
+    let current = sections[0];
+    for (const section of sections) {
+      if (section.getBoundingClientRect().top <= 110) current = section;
+    }
+    tocLinks.forEach(a => {
+      a.classList.toggle('active', current && a.getAttribute('href') === `#${current.id}`);
+    });
+  }
+
+  document.addEventListener('scroll', update, { passive: true });
+  window.addEventListener('resize', update);
+  update();
+})();
+</script>
+</body>
+</html>
