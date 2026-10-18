@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="StartLux-Decision v1.1 AutoThink 模型结构与 RLCD² 训练方案解析：Qwen3.8 骨干、混合注意力、概率读出、三阶段训练、proper scoring rule、group-relative policy gradient 与权重实证。">
+<meta name="description" content="StartLux-Decision v1.1 AutoThink 模型结构与 RLCD² 训练方案解析：Qwen3.8 骨干、混合注意力、概率读出、三阶段训练、proper scoring rule 与 group-relative policy gradient。">
 <title>StartLux-Decision v1.1 AutoThink：模型结构与 RLCD² 训练解析</title>
 <style>
 :root {
@@ -271,7 +271,6 @@ details > div { padding: 0 15px 14px; color: #bfc5cf; font-size: 14px; }
       <a href="#architecture">Architecture</a>
       <a href="#training">Training</a>
       <a href="#rlcd">RLCD²</a>
-      <a href="#weights">Weights</a>
     </nav>
   </div>
 </header>
@@ -295,7 +294,7 @@ details > div { padding: 0 15px 14px; color: #bfc5cf; font-size: 14px; }
   <section id="tldr">
     <h2>1. TL;DR</h2>
     <div class="note">
-      <strong>证据口径：</strong>模型结构来自配置与全部 safetensors header；权重变化来自覆盖全部共享 tensor 的确定性抽样；RL 公式和消融来自技术报告。明确事实与推断在文中分开标记。
+      <strong>证据口径：</strong>模型结构来自公开配置与模型实现，RL 公式和消融来自技术报告。明确事实与推断在文中分开标记。
     </div>
     <div class="tldr">
       <ol>
@@ -305,7 +304,6 @@ details > div { padding: 0 15px 14px; color: #bfc5cf; font-size: 14px; }
         <li>AutoThink 先得到 <code>p₀</code>；若最大概率低于 gate，再生成推理 <code>τ</code>，得到 <code>p₁</code>，最终返回 <strong>0.25p₀ + 0.75p₁</strong>。</li>
         <li>训练分三段：全参数决策 SFT → adapter 扩展任务并合并 → reasoning supervision + 全参数 RLCD²。</li>
         <li>RLCD² 的奖励是：<strong>推理后概率质量 − 推理前概率质量 − 超过软预算的长度成本</strong>。发布模型用 decision-weighted proper score、3072-token 软预算和 4096-token 硬上限。</li>
-        <li>权重实证显示：训练主要改写 MLP、全注意力和线性注意力；视觉塔保持冻结，LM Head 几乎未动。</li>
       </ol>
     </div>
   </section>
@@ -544,46 +542,8 @@ Request ── causal readout ──▶ p₀ ── max(p₀) ≥ gate ?
     </div>
   </section>
 
-  <section id="weights">
-    <h2>5. 权重文件告诉我们的训练事实</h2>
-
-    <h3 id="weight-diff">5.1 与 Qwen3.8 原版的精确结构差异</h3>
-    <div class="metric-row">
-      <div class="metric"><div class="value">−15</div><div class="name">删除的 tensor，全部属于 MTP</div></div>
-      <div class="metric"><div class="value">−424.7M</div><div class="name">参数减少量，约 −1.53%</div></div>
-      <div class="metric"><div class="value">0</div><div class="name">新增决策分类头</div></div>
-    </div>
-    <p>StartLux 保留 Qwen3.8 的 64 层主干，删除了一层 <code>mtp.*</code> 多 token 预测辅助模块，包括注意力、MLP、norm 与 pre-FC 投影。推断上，这些权重不是 typed decision 或常规自回归服务所必需；论文没有明确解释删除动机。</p>
-
-    <details>
-      <summary>权重审计方法与边界</summary>
-      <div>
-        读取 StartLux、Qwen3.8 与 Qwen3.5 的全部 safetensors 索引和分片 header，精确比较 tensor 名称、形状、dtype 与参数量；随后对每个共享 tensor 读取最多 32,768 个由名称哈希确定位置的连续值，小 tensor 全量读取。Qwen3.8 对比覆盖 1,184 个共享 tensor、约 2,265 万个权重值。数值差异是覆盖所有 tensor 的抽样估计，不是整个 50 GiB 权重的逐字节全量哈希。
-      </div>
-    </details>
-
-    <h3 id="module-change">5.2 变化集中在哪里</h3>
-    <p>相对改变量定义为 <code>RMS(StartLux−Qwen3.8) / RMS(Qwen3.8)</code>。它描述更新幅度，不等于参加训练的参数比例。</p>
-
-    <div class="bar-list" aria-label="各模块相对权重改变量">
-      <div class="bar-row"><span>MLP</span><div class="bar-track"><div class="bar-fill" style="width:96.3%"></div></div><span class="bar-value">4.815%</span></div>
-      <div class="bar-row"><span>Full attention</span><div class="bar-track"><div class="bar-fill" style="width:35.9%"></div></div><span class="bar-value">1.797%</span></div>
-      <div class="bar-row"><span>Linear attention</span><div class="bar-track"><div class="bar-fill" style="width:14.1%"></div></div><span class="bar-value">0.703%</span></div>
-      <div class="bar-row"><span>Embedding</span><div class="bar-track"><div class="bar-fill" style="width:1.7%"></div></div><span class="bar-value">0.084%</span></div>
-      <div class="bar-row"><span>Norm</span><div class="bar-track"><div class="bar-fill" style="width:.6%"></div></div><span class="bar-value">0.028%</span></div>
-      <div class="bar-row"><span>LM Head</span><div class="bar-track"><div class="bar-fill" style="width:.08%"></div></div><span class="bar-value">0.00025%</span></div>
-      <div class="bar-row"><span>Vision tower</span><div class="bar-track"><div class="bar-fill" style="width:0"></div></div><span class="bar-value">0%</span></div>
-    </div>
-
-    <p>适配重点是 FFN/MLP、门控投影和注意力 Q/K/V 等内部变换，而不是词表输出矩阵。变化最大的层多出现在第 3、7、11、15、19、23、27 层，恰好对应每四层一次的 full-attention 节点。</p>
-
-    <div class="key">
-      <strong>与训练方案相互印证：</strong>发布权重没有外置 adapter，说明 Stage 2/3 adapter 已合并；文本主干广泛变化，符合 Stage 1 全参数 SFT 和 Stage 3 全参数 RL；视觉抽样值与 Qwen3.8 全部相同，符合视觉塔冻结。
-    </div>
-  </section>
-
   <section id="sources">
-    <h2>6. 主要资料</h2>
+    <h2>5. 主要资料</h2>
     <ol class="source-list">
       <li><a href="https://arxiv.org/html/2610.17309" target="_blank" rel="noreferrer">StartLux-Decision 技术报告</a>：模型设计、三阶段训练、RLCD² 公式和消融。</li>
       <li><a href="https://github.com/StartLuxLabs/StartLux-Decision" target="_blank" rel="noreferrer">StartLux-Decision 官方仓库</a>：推理流程、服务实现和公开配置。</li>
@@ -593,7 +553,7 @@ Request ── causal readout ──▶ p₀ ── max(p₀) ≥ gate ?
   </section>
 
   <div class="footer">
-    本文聚焦模型结构与训练机制。权重结构结论来自完整 header；数值变化来自覆盖全部共享 tensor 的确定性抽样。文章未把公开开发集成绩当作独立泛化证据。
+    本文聚焦模型结构与训练机制，评测数字仅用于解释训练作用，不把公开开发集成绩当作独立泛化证据。
   </div>
 </article>
 
@@ -616,8 +576,7 @@ Request ── causal readout ──▶ p₀ ── max(p₀) ≥ gate ?
     <a href="#reward" class="sub">奖励函数</a>
     <a href="#policy" class="sub">策略优化</a>
     <a href="#cancellation" class="sub">抵消项</a>
-    <a href="#weights">5. 权重证据</a>
-    <a href="#sources">6. 主要资料</a>
+    <a href="#sources">5. 主要资料</a>
   </nav>
 </aside>
 </div>
