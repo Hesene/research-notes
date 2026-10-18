@@ -141,6 +141,21 @@ code {
   color: #d5dae2;
   white-space: pre;
 }
+.paper-figure { margin: 20px 0 28px; }
+.paper-figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.paper-figure figcaption {
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
 .note, .key, .warn {
   border-radius: 9px;
   padding: 16px 18px;
@@ -439,38 +454,13 @@ Request ── causal readout ──▶ p₀ ── max(p₀) ≥ gate ?
   <section id="rlcd">
     <h2>4. RLCD²：奖励“推理带来的概率改善”</h2>
 
-    <h3 id="roles">4.1 三个逻辑角色：policy、scorer 与 reference</h3>
-    <div class="diagram">Reasoning-supervised checkpoint
-             │
-             ├── frozen copy ──▶ scorer: compute p₀ and p₁
-             ├── frozen copy ──▶ reference: KL constraint
-             │
-             └── trainable copy ▶ policy: generate reasoning τ
-                                      │
-                                      ▼
-                       all language-model parameters updated
-                       vision tower remains frozen</div>
+    <h3 id="rl-loop">4.1 一张图看懂训练闭环</h3>
+    <figure class="paper-figure">
+      <img src="startlux-rlcd2-training.svg" alt="RLCD²训练流程：从推理监督模型复制出可训练策略、冻结评分器和冻结参考策略；筛选初始置信度低于0.9的困难题，在线采样多条推理轨迹，计算推理前后概率质量增量与长度成本，组内中心化奖励后用带KL约束的裁剪策略梯度更新模型。" loading="lazy">
+      <figcaption>图 1 · RLCD² 的在线训练闭环。紫色表示可训练 policy，绿色表示冻结概率 scorer，灰色表示用于 KL 约束的 reference policy。</figcaption>
+    </figure>
 
-    <p>冻结 scorer 的目的，是防止奖励函数跟随 policy 一起漂移。policy 只能通过生成更有用的推理来提高得分，不能简单改变负责打分的概率读出器。最终部署只有一个更新后的 checkpoint；KL 正则用于约束它不要偏离起始模型太远。</p>
-
-    <div class="diagram">Labeled difficult decision (x, t)
-                 │
-                 ▼
-      policy πθ samples G traces τ₁…τG
-                 │
-                 ▼
- frozen scorer reads p₁(x,τᵢ), compared with p₀(x)
-                 │
-                 ▼
- probability-quality gain − over-budget length cost
-                 │
-                 ▼
- center rewards within each prompt and clip to [−5, 5]
-                 │
-                 ▼
- token-level clipped policy gradient + KL to πref</div>
-
-    <p>因此 RL 阶段不需要人工标准思维链，也不把梯度穿过 scorer：scorer 只返回序列级标量奖励，梯度通过被采样轨迹中各 token 的 log-probability 更新 policy。</p>
+    <p>三个角色均初始化自 reasoning-supervised checkpoint。冻结 scorer 防止奖励随 policy 一起漂移；reference 通过 KL 限制更新幅度；只有当前 policy 接收梯度。RL 不需要人工标准思维链，也不把梯度穿过 scorer：它只用 scorer 返回的序列级奖励更新被采样轨迹中各 token 的生成概率。最终部署只保留更新后的 policy。</p>
 
     <h3 id="proper-score">4.2 为什么不用“答对 +1，答错 0”</h3>
     <p>RLCD² 使用 proper scoring rule 评价整个概率分布。论文讨论 Brier score、log score，并在发布模型中采用 decision-weighted score：</p>
@@ -584,23 +574,8 @@ Request ── causal readout ──▶ p₀ ── max(p₀) ≥ gate ?
     </div>
   </section>
 
-  <section id="limits">
-    <h2>6. 复现边界与技术判断</h2>
-    <ol>
-      <li><strong>训练不能严格复现。</strong>缺少 RL group size、PPO clip、KL 系数、学习率、batch size、训练步数以及完整数据配方。</li>
-      <li><strong>gate 不是 RL 学出的收益预测器。</strong>它只依据 <code>max(p₀)</code> 决定是否思考，无法直接估计“继续推理的预期收益”。</li>
-      <li><strong>冻结 scorer 带来稳定性，也带来偏差。</strong>训练奖励由起始 checkpoint 读出，部署由最终 checkpoint 读出；KL 约束这种偏移，但论文没有单独量化两者差异。</li>
-      <li><strong>长度预算会伤害真正需要长计算的问题。</strong>3072 是折中，不是普适最优值；短预算能提高终止率，却会明显降低长计算准确率。</li>
-      <li><strong>“概率更好”不等于“答案一定翻转为正确”。</strong>proper score 同时优化校准和分辨率，可能在 argmax 不变时仍得到改进。</li>
-    </ol>
-
-    <div class="note">
-      <strong>最终判断：</strong>StartLux AutoThink 的技术核心不是给分类模型附加 CoT，而是把原语言模型同时用作概率读出器、推理策略和推理后读出器。RLCD² 则主要把这个系统从“会推理但可能循环”调整为“在不确定时进行有限推理，并尽量维持可用概率”。
-    </div>
-  </section>
-
   <section id="sources">
-    <h2>7. 主要资料</h2>
+    <h2>6. 主要资料</h2>
     <ol class="source-list">
       <li><a href="https://arxiv.org/html/2610.17309" target="_blank" rel="noreferrer">StartLux-Decision 技术报告</a>：模型设计、三阶段训练、RLCD² 公式和消融。</li>
       <li><a href="https://github.com/StartLuxLabs/StartLux-Decision" target="_blank" rel="noreferrer">StartLux-Decision 官方仓库</a>：推理流程、服务实现和公开配置。</li>
@@ -628,13 +603,13 @@ Request ── causal readout ──▶ p₀ ── max(p₀) ≥ gate ?
     <a href="#stage3" class="sub">推理监督</a>
     <a href="#data-construction" class="sub">数据构造</a>
     <a href="#rlcd">4. RLCD²</a>
+    <a href="#rl-loop" class="sub">训练闭环</a>
     <a href="#proper-score" class="sub">Proper score</a>
     <a href="#reward" class="sub">奖励函数</a>
     <a href="#policy" class="sub">策略优化</a>
     <a href="#cancellation" class="sub">抵消项</a>
     <a href="#weights">5. 权重证据</a>
-    <a href="#limits">6. 复现边界</a>
-    <a href="#sources">7. 主要资料</a>
+    <a href="#sources">6. 主要资料</a>
   </nav>
 </aside>
 </div>
