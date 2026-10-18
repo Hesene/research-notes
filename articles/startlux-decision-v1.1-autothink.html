@@ -368,10 +368,14 @@ details > div { padding: 0 15px 14px; color: #bfc5cf; font-size: 14px; }
     <p><code>choice</code>、<code>noul</code> 和 <code>score</code> 共用相同 readout；区别主要在 prompt、候选构造和后处理。27B 的三个温度分别约为 0.9503、1.3760、1.0108。温度改变概率尖锐度，不改变候选排序。</p>
 
     <div class="flow">
-      <div class="flow-card"><h4>choice</h4><p>候选项直接映射为 A–Z，输出完整概率分布。</p></div>
-      <div class="flow-card"><h4>noul</h4><p>构造成二选一判断，最终返回“是”的概率。</p></div>
-      <div class="flow-card"><h4>score</h4><p>2–10 档有序概率，并可计算期望分。</p></div>
+      <div class="flow-card"><h4>choice</h4><p>第 1–26 个候选依次映射到 A–Z，再把字母概率还原为原始 option id。</p></div>
+      <div class="flow-card"><h4>noul</h4><p>固定使用两个字母：A=<code>true</code>，B=<code>false</code>；API 返回值就是 P(A)。</p></div>
+      <div class="flow-card"><h4>score</h4><p>2–10 个等级从低到高映射到 A–J，再用字母概率计算期望等级 ∑ipᵢ。</p></div>
       <div class="flow-card"><h4>超过 26 项</h4><p>分组淘汰后再决赛，不再等价于一次联合 softmax。</p></div>
+    </div>
+
+    <div class="key">
+      <strong>三种类型共用同一套 option-letter readout。</strong><code>noul</code> 和 <code>score</code> 在 API 语义上不是 choice，但底层仍只收集前 K 个 A–Z 单 token logits，并在这些字母之间做 softmax。<code>true/false</code>、数字 0–9、EOS 和 <code>&lt;/think&gt;</code> 都不参加决策概率归一化；它们只是输出字段、输入文本或生成控制。只有 reasoning 生成阶段才重新使用完整词表。<code>allow_none</code> 也没有专用拒答 token，而是把 “None of the above” 追加为下一个字母候选。
     </div>
 
     <h3 id="autothink">2.3 Read-or-Think 前向流程</h3>
