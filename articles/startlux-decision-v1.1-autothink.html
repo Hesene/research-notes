@@ -460,9 +460,13 @@ Request ── causal readout ──▶ p₀ ── max(p₀) ≥ gate ?
 
     <h3 id="rl-loop">4.1 一张图看懂训练闭环</h3>
     <figure class="paper-figure">
-      <img src="startlux-rlcd2-training.svg" alt="RLCD²训练流程：从推理监督模型复制出可训练策略、冻结评分器和冻结参考策略；筛选初始置信度低于0.9的困难题，在线采样多条推理轨迹，计算推理前后概率质量增量与长度成本，组内中心化奖励后用带KL约束的裁剪策略梯度更新模型。" loading="lazy">
-      <figcaption>图 1 · RLCD² 的在线训练闭环。紫色表示可训练 policy，绿色表示冻结概率 scorer，灰色表示用于 KL 约束的 reference policy。</figcaption>
+      <img src="startlux-rlcd2-training.svg?v=zh-20261018" alt="RLCD²训练流程：从推理监督模型复制出可训练策略、冻结评分器和冻结参考策略；筛选初始置信度低于0.9的困难题，在线采样多条推理轨迹，计算推理前后概率质量增量与长度成本，组内中心化奖励后用带KL约束的裁剪策略梯度更新模型。" loading="lazy">
+      <figcaption>图 1 · RLCD² 中文训练闭环。紫色表示可训练 policy，绿色表示冻结概率 scorer，灰色表示用于 KL 约束的 reference policy。</figcaption>
     </figure>
+
+    <div class="key">
+      <strong>读图顺序：</strong>冻结 scorer 先产生无推理概率 <code>p₀</code> 并筛出困难题；当前 policy 对同一道题采样 <code>G</code> 条 reasoning；scorer 再产生各自的 <code>p₁</code> 并计算“概率质量增量 − 长度成本”；奖励只在同题轨迹之间中心化比较；最后用裁剪策略梯度更新 policy，并用冻结 reference 的 KL 项限制偏移。<strong>gate、scorer 和 reference 都不接收梯度。</strong>
+    </div>
 
     <p>三个角色均初始化自 reasoning-supervised checkpoint。冻结 scorer 防止奖励随 policy 一起漂移；reference 通过 KL 限制更新幅度；只有当前 policy 接收梯度。RL 不需要人工标准思维链，也不把梯度穿过 scorer：它只用 scorer 返回的序列级奖励更新被采样轨迹中各 token 的生成概率。最终部署只保留更新后的 policy。</p>
 
