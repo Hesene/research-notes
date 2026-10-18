@@ -374,6 +374,10 @@ Request ── causal readout ──▶ p₀ ── max(p₀) ≥ gate ?
                                 return 0.25p₀ + 0.75p₁</div>
 
     <p>推理生成使用 temperature 0.6、top-p 0.95、top-k 20，最多 4096 token。论文主要结果使用 <code>gate=0.9</code>；公开服务器默认值一度为 0.6。gate 是 runtime 策略，不是一个额外学习出来的神经网络门控头。</p>
+
+    <div class="key">
+      <strong>低于 gate 后并不是沿着低分的候选 token 继续生成。</strong>第一次调用使用关闭思考、以空 <code>&lt;think&gt;&lt;/think&gt;</code> 结尾的 prompt，只从 LM Head 中抽取 A–Z 得到 <code>p₀</code>。若低于 gate，runtime 会把同一问题重新渲染为开启思考、以 <code>&lt;think&gt;</code> 开头的 prompt，并用完整词表自回归生成轨迹；闭合 <code>&lt;/think&gt;</code> 后再抽取 A–Z 得到 <code>p₁</code>。第二次不再检查 gate，直接按配置混合 <code>p₀</code> 与 <code>p₁</code>。
+    </div>
   </section>
 
   <section id="training">
@@ -415,15 +419,31 @@ Request ── causal readout ──▶ p₀ ── max(p₀) ≥ gate ?
 
     <h3 id="stage3">3.3 Stage 3：reasoning supervision 是 RL 的前置条件</h3>
     <p>决策训练会削弱模型生成和正常结束推理的能力，所以作者先用推理示范恢复“会写、会停”的轨迹，再进行 RL。若直接对一个经常输出空轨迹的 checkpoint 做 policy gradient，模型会学会大量跳过推理；单纯提高最大生成长度也不能修复重复循环。</p>
+
+    <h3 id="data-construction">3.4 训练数据怎样构造</h3>
+    <p>所有来源先统一成 typed-decision 记录：<code>state + question type + options + target distribution + label provenance + parent-group ID</code>。软目标可以保留多人标注分歧；选项按记录哈希确定性打乱，过长记录直接排除，同一原始状态的变体按 parent group 一起切分和去污染。</p>
+
+    <table>
+      <thead><tr><th>数据</th><th>主要构造方式</th><th>公开边界</th></tr></thead>
+      <tbody>
+        <tr><td>Lux-Release</td><td>把公共分类、推理、QA、安全、偏好、工具调用与知识多选题改写为决策记录，并混入社区与程序生成数据；0.8B–9B 约 270 万条，27B 约 80 万条。</td><td>论文给出来源大类和比例，没有发布完整清单。</td></tr>
+        <tr><td>Lux-Rounds</td><td>约 170 万条，增加 benchmark 训练集、相关公开数据、程序化流程题、select-all、模型生成与 teacher 标注题，并回放部分 Lux-Release。</td><td>模型生成标签只有在两个独立 verifier 都能恢复该标签时才保留。</td></tr>
+        <tr><td>Lux-Think</td><td>每个模型约 4千–2.1 万条监督推理轨迹，用于恢复推理生成与正常终止。</td><td>teacher、采样数、过滤阈值和数据文件均未披露，不能严格复现。</td></tr>
+        <tr><td>RLCD² prompts</td><td>不是离线标准 CoT；从带目标分布的决策题中筛出 <code>max(p₀)&lt;0.9</code> 的困难题，再由当前 policy 在线采样 reasoning。</td><td>完整 prompt 池、group size 和训练超参数未披露。</td></tr>
+      </tbody>
+    </table>
+
+    <p>程序生成题使用独立模板和确定性计算标签；模型生成题由两个 verifier 盲验。训练记录还会对 Decision Index、JevBench、DecisionPivot 等 held-out 集做匹配，并按 parent group 删除相关变体。公开资料足以理解数据工程，但不足以一比一重建 Lux-Think 与 RL 数据。</p>
   </section>
 
   <section id="rlcd">
     <h2>4. RLCD²：奖励“推理带来的概率改善”</h2>
 
-    <h3 id="roles">4.1 两个角色：可训练 policy 与冻结 scorer</h3>
+    <h3 id="roles">4.1 三个逻辑角色：policy、scorer 与 reference</h3>
     <div class="diagram">Reasoning-supervised checkpoint
              │
              ├── frozen copy ──▶ scorer: compute p₀ and p₁
+             ├── frozen copy ──▶ reference: KL constraint
              │
              └── trainable copy ▶ policy: generate reasoning τ
                                       │
@@ -432,6 +452,25 @@ Request ── causal readout ──▶ p₀ ── max(p₀) ≥ gate ?
                        vision tower remains frozen</div>
 
     <p>冻结 scorer 的目的，是防止奖励函数跟随 policy 一起漂移。policy 只能通过生成更有用的推理来提高得分，不能简单改变负责打分的概率读出器。最终部署只有一个更新后的 checkpoint；KL 正则用于约束它不要偏离起始模型太远。</p>
+
+    <div class="diagram">Labeled difficult decision (x, t)
+                 │
+                 ▼
+      policy πθ samples G traces τ₁…τG
+                 │
+                 ▼
+ frozen scorer reads p₁(x,τᵢ), compared with p₀(x)
+                 │
+                 ▼
+ probability-quality gain − over-budget length cost
+                 │
+                 ▼
+ center rewards within each prompt and clip to [−5, 5]
+                 │
+                 ▼
+ token-level clipped policy gradient + KL to πref</div>
+
+    <p>因此 RL 阶段不需要人工标准思维链，也不把梯度穿过 scorer：scorer 只返回序列级标量奖励，梯度通过被采样轨迹中各 token 的 log-probability 更新 policy。</p>
 
     <h3 id="proper-score">4.2 为什么不用“答对 +1，答错 0”</h3>
     <p>RLCD² 使用 proper scoring rule 评价整个概率分布。论文讨论 Brier score、log score，并在发布模型中采用 decision-weighted score：</p>
@@ -587,6 +626,7 @@ Request ── causal readout ──▶ p₀ ── max(p₀) ≥ gate ?
     <a href="#stage1" class="sub">决策 SFT</a>
     <a href="#stage2" class="sub">Adapter 合并</a>
     <a href="#stage3" class="sub">推理监督</a>
+    <a href="#data-construction" class="sub">数据构造</a>
     <a href="#rlcd">4. RLCD²</a>
     <a href="#proper-score" class="sub">Proper score</a>
     <a href="#reward" class="sub">奖励函数</a>
